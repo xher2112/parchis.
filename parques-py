@@ -1,0 +1,635 @@
+import pygame
+import random
+import sys
+import math
+
+# ---------------------
+# CONSTANTES Y CONFIGURACIÓN
+# ---------------------
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 700
+BOARD_SIZE = 600
+MARGIN = 20
+CELL_SIZE = 40
+BOARD_COLOR = (210, 180, 140)
+BACKGROUND_COLOR = (240, 240, 220)
+TEXT_COLOR = (30, 30, 30)
+BUTTON_COLOR = (70, 130, 180)
+BUTTON_HOVER_COLOR = (100, 160, 210)
+DICE_COLOR = (255, 255, 255)
+DICE_DOT_COLOR = (0, 0, 0)
+
+PLAYER_COLORS = {
+    "Red": (220, 60, 60),
+    "Blue": (60, 100, 220),
+    "Green": (60, 180, 60),
+    "Yellow": (220, 180, 40)
+}
+
+# ---------------------
+# CLASES DEL JUEGO
+# ---------------------
+
+class Player:
+    def __init__(self, name, color, start_position, home_entry):
+        self.name = name
+        self.color = color
+        self.start_position = start_position
+        self.home_entry = home_entry
+        self.pieces = []
+        self.double_count = 0
+        self.extra_moves = 0
+        self.last_moved_piece = None
+        
+        # Crear 4 fichas por jugador
+        for i in range(4):
+            self.pieces.append(Piece(self, i))
+    
+    def all_pieces_home(self):
+        """Verifica si todas las fichas han llegado a la meta"""
+        for piece in self.pieces:
+            if not piece.is_at_home():
+                return False
+        return True
+
+class Piece:
+    def __init__(self, player, piece_id):
+        self.player = player
+        self.piece_id = piece_id
+        self.position = "jail"  # 'jail', int (tablero), o (path, index)
+    
+    def __str__(self):
+        if self.position == "jail":
+            return f"{self.player.name}{self.piece_id}(jail)"
+        elif isinstance(self.position, int):
+            return f"{self.player.name}{self.piece_id}(ext {self.position})"
+        elif isinstance(self.position, tuple) and self.position[0] == "path":
+            return f"{self.player.name}{self.piece_id}(path {self.position[1]})"
+        return f"{self.player.name}{self.piece_id}(?)"
+    
+    def is_at_home(self):
+        """Verifica si la ficha está en la meta"""
+        return isinstance(self.position, tuple) and self.position[0] == "path" and self.position[1] == 7
+
+class GameBoard:
+    def __init__(self):
+        self.outer_positions = {}  # Posiciones del tablero externo
+        self.inner_paths = {}    # Caminos internos
+        self.jail_zones = {}      # Zonas de cárcel
+        self.safe_positions = set()  # Posiciones seguras
+        self.outer_board = {}     # Fichas en el tablero externo
+        self.initialize_board()
+    
+    def initialize_board(self):
+        """Inicializa el tablero con todas sus posiciones y caminos"""
+        # Posiciones externas
+        side_length = 17
+        board_center = BOARD_SIZE // 2
+        
+        # Definir posiciones externas
+        for i in range(side_length):
+            pos = i
+            x = MARGIN + i * ((BOARD_SIZE - 2*MARGIN) // (side_length - 1))
+            y = MARGIN
+            self.outer_positions[pos] = (x, y)
+        
+        for i in range(side_length):
+            pos = side_length + i
+            x = BOARD_SIZE - MARGIN
+            y = MARGIN + i * ((BOARD_SIZE - 2*MARGIN) // (side_length - 1))
+            self.outer_positions[pos] = (x, y)
+        
+        for i in range(side_length):
+            pos = 2*side_length + i
+            x = BOARD_SIZE - MARGIN - i * ((BOARD_SIZE - 2*MARGIN) // (side_length - 1))
+            y = BOARD_SIZE - MARGIN
+            self.outer_positions[pos] = (x, y)
+        
+        for i in range(side_length):
+            pos = 3*side_length + i
+            x = MARGIN
+            y = BOARD_SIZE - MARGIN - i * ((BOARD_SIZE - 2*MARGIN) // (side_length - 1))
+            self.outer_positions[pos] = (x, y)
+        
+        # Posiciones seguras (salidas de cada jugador)
+        self.safe_positions = {0, 17, 34, 51}
+        
+        # Caminos internos
+        self.inner_paths = {
+            "Red": self.create_inner_path(board_center, board_center - 50, 0, -1),
+            "Blue": self.create_inner_path(board_center + 50, board_center, 1, 0),
+            "Green": self.create_inner_path(board_center, board_center + 50, 0, 1),
+            "Yellow": self.create_inner_path(board_center - 50, board_center, -1, 0)
+        }
+        
+        # Zonas de cárcel
+        self.jail_zones = {
+            "Red": {"x": 100, "y": 150, "offset": 30},
+            "Blue": {"x": 700, "y": 150, "offset": 30},
+            "Green": {"x": 700, "y": 550, "offset": 30},
+            "Yellow": {"x": 100, "y": 550, "offset": 30}
+        }
+        
+        # Inicializar tablero externo
+        for i in range(4 * side_length):
+            self.outer_board[i] = []
+    
+    def create_inner_path(self, start_x, start_y, dx, dy):
+        """Crea un camino interno para un jugador"""
+        path = []
+        for i in range(8):
+            x = start_x + dx * (i + 1) * CELL_SIZE
+            y = start_y + dy * (i + 1) * CELL_SIZE
+            path.append((x, y))
+        return path
+    
+    def is_blocked(self, position):
+        """Verifica si una posición está bloqueada (dos fichas del mismo jugador)"""
+        if position in self.outer_board and len(self.outer_board[position]) == 2:
+            piece1, piece2 = self.outer_board[position]
+            return piece1.player == piece2.player
+        return False
+    
+    def is_valid_path(self, start, steps):
+        """Verifica si el camino está libre de bloqueos"""
+        for i in range(1, steps):
+            pos_to_check = (start + i) % (4 * 17)
+            if self.is_blocked(pos_to_check):
+                return False, pos_to_check
+        return True, None
+
+class GameInterface:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Super Parchís")
+        
+        self.font = pygame.font.SysFont(None, 24)
+        self.title_font = pygame.font.SysFont(None, 36)
+        self.dice_font = pygame.font.SysFont(None, 28)
+        
+        self.board = GameBoard()
+        self.players = [
+            Player("Red", "Red", 0, 67),
+            Player("Blue", "Blue", 17, 16),
+            Player("Green", "Green", 34, 33),
+            Player("Yellow", "Yellow", 51, 50)
+        ]
+        
+        self.current_player_index = 0
+        self.dice_values = []
+        self.selected_piece = None
+        self.doubles_count = 0
+        self.game_over = False
+        self.winner = None
+        
+        # Botones
+        self.roll_button = pygame.Rect(650, 620, 120, 50)
+        self.end_turn_button = pygame.Rect(500, 620, 120, 50)
+        
+        self.update_turn_message()
+    
+    def update_turn_message(self):
+        """Actualiza el mensaje del turno actual"""
+        current = self.players[self.current_player_index]
+        self.turn_message = f"Turno de: {current.name}"
+        self.turn_color = PLAYER_COLORS[current.name]
+    
+    def roll_dice(self):
+        """Lanza los dados"""
+        current = self.players[self.current_player_index]
+        
+        # Generar valores de dados
+        dice1 = random.randint(1, 6)
+        dice2 = random.randint(1, 6)
+        self.dice_values = [dice1, dice2]
+        
+        # Verificar dobles
+        is_double = dice1 == dice2
+        if is_double:
+            current.double_count += 1
+        else:
+            current.double_count = 0
+        
+        # Regla de tres dobles consecutivos
+        if current.double_count == 3:
+            self.handle_three_doubles(current)
+            return
+        
+        # Mensaje de estado
+        if is_double:
+            self.status_message = f"¡{current.name} sacó doble! (Puede lanzar de nuevo)"
+        else:
+            self.status_message = "Selecciona una ficha y un dado para mover"
+    
+    def handle_three_doubles(self, player):
+        """Maneja la regla de tres dobles consecutivos"""
+        if player.last_moved_piece is None:
+            # Buscar una ficha para enviar a la cárcel
+            for piece in player.pieces:
+                if piece.position != "jail":
+                    player.last_moved_piece = piece
+                    break
+            if player.last_moved_piece is None:
+                player.last_moved_piece = player.pieces[0]
+        
+        # Enviar ficha a la cárcel
+        piece = player.last_moved_piece
+        if isinstance(piece.position, int) and piece in self.board.outer_board[piece.position]:
+            self.board.outer_board[piece.position].remove(piece)
+        piece.position = "jail"
+        
+        self.status_message = f"¡Tres dobles consecutivos! {piece} regresa a la cárcel"
+        player.double_count = 0
+        player.last_moved_piece = None
+    
+    def move_piece(self, piece, steps):
+        """Mueve una ficha según el número de pasos"""
+        current = self.players[self.current_player_index]
+        
+        # Ficha en la cárcel
+        if piece.position == "jail":
+            if steps == 5:
+                if len(self.board.outer_board[piece.player.start_position]) < 2:
+                    piece.position = piece.player.start_position
+                    self.board.outer_board[piece.player.start_position].append(piece)
+                    current.last_moved_piece = piece
+                    return f"{piece} sale de la cárcel"
+                else:
+                    return f"La salida de {piece.player.name} está bloqueada"
+            else:
+                return "Necesitas un 5 para sacar la ficha de la cárcel"
+        
+        # Ficha en el tablero externo
+        elif isinstance(piece.position, int):
+            current_pos = piece.position
+            home_entry = piece.player.home_entry
+            
+            # Calcular distancia al inicio del camino interno
+            if home_entry >= current_pos:
+                distance = home_entry - current_pos
+            else:
+                distance = (4 * 17 - current_pos) + home_entry
+            
+            # Entrar al camino interno
+            if steps == distance:
+                if current_pos in self.board.outer_board and piece in self.board.outer_board[current_pos]:
+                    self.board.outer_board[current_pos].remove(piece)
+                piece.position = ("path", 0)
+                current.extra_moves += 10
+                current.last_moved_piece = piece
+                return f"{piece} entra al camino final"
+            elif steps > distance:
+                return "Movimiento no válido: se requiere exactitud para entrar al camino final"
+            else:
+                # Mover en el tablero externo
+                new_pos = (current_pos + steps) % (4 * 17)
+                valid, blocked_pos = self.board.is_valid_path(current_pos, steps)
+                
+                if not valid:
+                    return "Movimiento bloqueado: hay un bloqueo en el camino"
+                
+                # Capturar ficha oponente
+                if self.board.outer_board[new_pos]:
+                    opponent_piece = self.board.outer_board[new_pos][0]
+                    if opponent_piece.player != piece.player and new_pos not in self.board.safe_positions:
+                        # Enviar ficha oponente a la cárcel
+                        self.board.outer_board[new_pos].remove(opponent_piece)
+                        opponent_piece.position = "jail"
+                        # Movimiento extra por captura
+                        bonus_pos = (new_pos + 20) % (4 * 17)
+                        if self.board.is_valid_path(new_pos, 20)[0] and len(self.board.outer_board[bonus_pos]) < 2:
+                            if piece in self.board.outer_board[new_pos]:
+                                self.board.outer_board[new_pos].remove(piece)
+                            piece.position = bonus_pos
+                            self.board.outer_board[bonus_pos].append(piece)
+                            return f"{piece} captura a {opponent_piece} y avanza 20 casillas"
+                
+                # Mover ficha
+                if current_pos in self.board.outer_board and piece in self.board.outer_board[current_pos]:
+                    self.board.outer_board[current_pos].remove(piece)
+                piece.position = new_pos
+                self.board.outer_board[new_pos].append(piece)
+                current.last_moved_piece = piece
+                return f"{piece} se mueve de {current_pos + 1} a {new_pos + 1}"
+        
+        # Ficha en el camino interno
+        elif isinstance(piece.position, tuple) and piece.position[0] == "path":
+            path_index = piece.position[1]
+            new_index = path_index + steps
+            
+            if new_index >= 8:
+                return "Movimiento no válido: se requiere exactitud para llegar a la meta"
+            
+            piece.position = ("path", new_index)
+            current.last_moved_piece = piece
+            
+            if new_index == 7:
+                current.extra_moves += 10
+                return f"¡{piece} ha llegado a la meta!"
+            
+            return f"{piece} avanza en el camino final"
+        
+        return "Movimiento desconocido"
+    
+    def end_turn(self):
+        """Finaliza el turno actual"""
+        current = self.players[self.current_player_index]
+        
+        # Verificar si el jugador ha ganado
+        if current.all_pieces_home():
+            self.game_over = True
+            self.winner = current
+            return
+        
+        # Cambiar de jugador si no hubo dobles
+        if not self.dice_values or self.dice_values[0] != self.dice_values[1]:
+            self.current_player_index = (self.current_player_index + 1) % len(self.players)
+            self.update_turn_message()
+        
+        # Limpiar estado
+        self.dice_values = []
+        self.selected_piece = None
+        self.status_message = ""
+    
+    def draw_board(self):
+        """Dibuja el tablero y la interfaz gráfica"""
+        # Fondo
+        self.screen.fill(BACKGROUND_COLOR)
+        
+        # Tablero principal
+        pygame.draw.rect(self.screen, BOARD_COLOR, (MARGIN, MARGIN, BOARD_SIZE - 2*MARGIN, BOARD_SIZE - 2*MARGIN))
+        
+        # Dibujar casillas externas
+        for pos, (x, y) in self.board.outer_positions.items():
+            rect = pygame.Rect(x - 20, y - 20, 40, 40)
+            pygame.draw.rect(self.screen, (220, 220, 220), rect)
+            pygame.draw.rect(self.screen, (100, 100, 100), rect, 1)
+            
+            # Numerar casillas importantes
+            if pos in [0, 17, 34, 51, 68]:
+                text = self.font.render(str(pos + 1), True, TEXT_COLOR)
+                self.screen.blit(text, (x - 8, y - 8))
+        
+        # Dibujar caminos internos
+        for player_name, path in self.board.inner_paths.items():
+            for i, (x, y) in enumerate(path):
+                rect = pygame.Rect(x - 15, y - 15, 30, 30)
+                pygame.draw.rect(self.screen, (240, 240, 240), rect)
+                pygame.draw.rect(self.screen, (100, 100, 100), rect, 1)
+                
+                # Numerar casillas del camino interno
+                text = self.font.render(str(i + 1), True, TEXT_COLOR)
+                self.screen.blit(text, (x - 5, y - 8))
+        
+        # Dibujar fichas en el tablero externo
+        for pos, pieces in self.board.outer_board.items():
+            if pieces:
+                x, y = self.board.outer_positions[pos]
+                for i, piece in enumerate(pieces):
+                    offset_x = i * 10 - 5
+                    offset_y = i * 10 - 5
+                    color = PLAYER_COLORS[piece.player.name]
+                    pygame.draw.circle(self.screen, color, (x + offset_x, y + offset_y), 12)
+                    pygame.draw.circle(self.screen, (0, 0, 0), (x + offset_x, y + offset_y), 12, 1)
+                    
+                    # Resaltar ficha seleccionada
+                    if piece == self.selected_piece:
+                        pygame.draw.circle(self.screen, (255, 255, 255), (x + offset_x, y + offset_y), 15, 2)
+        
+        # Dibujar fichas en caminos internos
+        for player_name, path in self.board.inner_paths.items():
+            player = next((p for p in self.players if p.name == player_name), None)
+            if player:
+                for piece in player.pieces:
+                    if isinstance(piece.position, tuple) and piece.position[0] == "path":
+                        path_index = piece.position[1]
+                        if path_index < len(path):
+                            x, y = path[path_index]
+                            color = PLAYER_COLORS[piece.player.name]
+                            pygame.draw.circle(self.screen, color, (x, y), 12)
+                            pygame.draw.circle(self.screen, (0, 0, 0), (x, y), 12, 1)
+                            
+                            # Resaltar ficha seleccionada
+                            if piece == self.selected_piece:
+                                pygame.draw.circle(self.screen, (255, 255, 255), (x, y), 15, 2)
+        
+        # Dibujar cárcel
+        for player_name, jail_info in self.board.jail_zones.items():
+            player = next((p for p in self.players if p.name == player_name), None)
+            if player:
+                x, y = jail_info["x"], jail_info["y"]
+                offset = jail_info["offset"]
+                
+                # Etiqueta de la cárcel
+                text = self.font.render(f"Cárcel {player_name}", True, PLAYER_COLORS[player_name])
+                self.screen.blit(text, (x - 40, y - 30))
+                
+                # Dibujar fichas en la cárcel
+                for i, piece in enumerate(player.pieces):
+                    if piece.position == "jail":
+                        py = y + i * offset
+                        color = PLAYER_COLORS[piece.player.name]
+                        
+                        # Dibujar triángulo para ficha en cárcel
+                        points = [
+                            (x, py - 15),
+                            (x - 15, py + 15),
+                            (x + 15, py + 15)
+                        ]
+                        pygame.draw.polygon(self.screen, color, points)
+                        pygame.draw.polygon(self.screen, (0, 0, 0), points, 1)
+                        
+                        # Resaltar ficha seleccionada
+                        if piece == self.selected_piece:
+                            highlight_points = [
+                                (x, py - 18),
+                                (x - 18, py + 18),
+                                (x + 18, py + 18)
+                            ]
+                            pygame.draw.polygon(self.screen, (255, 255, 255), highlight_points, 2)
+        
+        # Dibujar panel de control
+        pygame.draw.rect(self.screen, (200, 200, 200), (BOARD_SIZE, 0, SCREEN_WIDTH - BOARD_SIZE, SCREEN_HEIGHT))
+        pygame.draw.line(self.screen, (100, 100, 100), (BOARD_SIZE, 0), (BOARD_SIZE, SCREEN_HEIGHT), 2)
+        
+        # Botones
+        mouse_pos = pygame.mouse.get_pos()
+        roll_hover = self.roll_button.collidepoint(mouse_pos)
+        end_hover = self.end_turn_button.collidepoint(mouse_pos)
+        
+        pygame.draw.rect(self.screen, BUTTON_HOVER_COLOR if roll_hover else BUTTON_COLOR, self.roll_button, border_radius=5)
+        pygame.draw.rect(self.screen, (0, 0, 0), self.roll_button, 2, border_radius=5)
+        text = self.font.render("Lanzar Dados", True, (255, 255, 255))
+        self.screen.blit(text, (self.roll_button.centerx - text.get_width()//2, self.roll_button.centery - text.get_height()//2))
+        
+        pygame.draw.rect(self.screen, BUTTON_HOVER_COLOR if end_hover else BUTTON_COLOR, self.end_turn_button, border_radius=5)
+        pygame.draw.rect(self.screen, (0, 0, 0), self.end_turn_button, 2, border_radius=5)
+        text = self.font.render("Terminar Turno", True, (255, 255, 255))
+        self.screen.blit(text, (self.end_turn_button.centerx - text.get_width()//2, self.end_turn_button.centery - text.get_height()//2))
+        
+        # Información del juego
+        text = self.title_font.render(self.turn_message, True, self.turn_color)
+        self.screen.blit(text, (BOARD_SIZE + 20, 50))
+        
+        # Dados
+        if self.dice_values:
+            for i, value in enumerate(self.dice_values):
+                self.draw_dice(BOARD_SIZE + 50 + i*70, 100, value)
+        
+        # Mensaje de estado
+        if self.status_message:
+            text = self.font.render(self.status_message, True, (200, 0, 0))
+            self.screen.blit(text, (BOARD_SIZE + 20, 200))
+        
+        # Mensaje de fin de juego
+        if self.game_over and self.winner:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 128))
+            self.screen.blit(overlay, (0, 0))
+            
+            text = self.title_font.render(f"¡{self.winner.name} ha ganado!", True, (255, 255, 255))
+            self.screen.blit(text, (SCREEN_WIDTH//2 - text.get_width()//2, SCREEN_HEIGHT//2 - 50))
+            
+            text = self.font.render("Presiona cualquier tecla para salir", True, (255, 255, 255))
+            self.screen.blit(text, (SCREEN_WIDTH//2 - text.get_width()//2, SCREEN_HEIGHT//2 + 20))
+        
+        pygame.display.flip()
+    
+    def draw_dice(self, x, y, value):
+        """Dibuja un dado con el valor especificado"""
+        rect = pygame.Rect(x, y, 50, 50)
+        pygame.draw.rect(self.screen, DICE_COLOR, rect, border_radius=5)
+        pygame.draw.rect(self.screen, (0, 0, 0), rect, 2, border_radius=5)
+        
+        # Dibujar puntos según el valor
+        radius = 5
+        if value == 1:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 25, y + 25), radius)
+        elif value == 2:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 35), radius)
+        elif value == 3:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 25, y + 25), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 35), radius)
+        elif value == 4:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 35), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 35), radius)
+        elif value == 5:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 15), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 25, y + 25), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 35), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 35), radius)
+        elif value == 6:
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 10), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 10), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 25), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 25), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 15, y + 40), radius)
+            pygame.draw.circle(self.screen, DICE_DOT_COLOR, (x + 35, y + 40), radius)
+    
+    def handle_click(self, pos):
+        """Maneja los clics del mouse"""
+        x, y = pos
+        
+        # Verificar clic en botones
+        if self.roll_button.collidepoint(x, y):
+            self.roll_dice()
+            return
+        elif self.end_turn_button.collidepoint(x, y):
+            self.end_turn()
+            return
+        
+        # Verificar clic en dados
+        if self.dice_values and y < BOARD_SIZE:
+            for i, value in enumerate(self.dice_values):
+                dice_rect = pygame.Rect(BOARD_SIZE + 50 + i*70, 100, 50, 50)
+                if dice_rect.collidepoint(x, y):
+                    if self.selected_piece:
+                        result = self.move_piece(self.selected_piece, value)
+                        self.status_message = result
+                        self.dice_values.remove(value)
+                        
+                        # Verificar si todas las fichas llegaron a casa
+                        current = self.players[self.current_player_index]
+                        if current.all_pieces_home():
+                            self.game_over = True
+                            self.winner = current
+                    else:
+                        self.status_message = "Selecciona una ficha primero"
+                    return
+        
+        # Verificar clic en el tablero
+        if y < BOARD_SIZE:
+            current = self.players[self.current_player_index]
+            
+            # Buscar ficha en el tablero externo
+            for pos, pieces in self.board.outer_board.items():
+                if pieces:
+                    x_pos, y_pos = self.board.outer_positions[pos]
+                    if abs(x - x_pos) < 25 and abs(y - y_pos) < 25:
+                        for piece in pieces:
+                            if piece.player == current:
+                                self.selected_piece = piece
+                                self.status_message = f"Ficha seleccionada: {piece}"
+                                return
+            
+            # Buscar ficha en camino interno
+            for player_name, path in self.board.inner_paths.items():
+                player = next((p for p in self.players if p.name == player_name), None)
+                if player and player == current:
+                    for i, (x_path, y_path) in enumerate(path):
+                        if abs(x - x_path) < 20 and abs(y - y_path) < 20:
+                            for piece in player.pieces:
+                                if isinstance(piece.position, tuple) and piece.position[0] == "path" and piece.position[1] == i:
+                                    self.selected_piece = piece
+                                    self.status_message = f"Ficha seleccionada: {piece}"
+                                    return
+            
+            # Buscar ficha en la cárcel
+            for player_name, jail_info in self.board.jail_zones.items():
+                player = next((p for p in self.players if p.name == player_name), None)
+                if player and player == current:
+                    x_jail, y_jail = jail_info["x"], jail_info["y"]
+                    offset = jail_info["offset"]
+                    
+                    for i, piece in enumerate(player.pieces):
+                        if piece.position == "jail":
+                            py = y_jail + i * offset
+                            if abs(x - x_jail) < 20 and abs(y - py) < 20:
+                                self.selected_piece = piece
+                                self.status_message = f"Ficha seleccionada: {piece}"
+                                return
+    
+    def run(self):
+        """Bucle principal del juego"""
+        clock = pygame.time.Clock()
+        running = True
+        
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1:  # Clic izquierdo
+                        self.handle_click(event.pos)
+                elif event.type == pygame.KEYDOWN:
+                    if self.game_over:
+                        running = False
+            
+            self.draw_board()
+            clock.tick(60)
+        
+        pygame.quit()
+        sys.exit()
+
+# ---------------------
+# INICIO DEL JUEGO
+# ---------------------
+if __name__ == "__main__":
+    game = GameInterface()
+    game.run()
