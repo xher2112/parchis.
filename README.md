@@ -99,6 +99,7 @@ La clase `InterfazParquesPygame` se encarga de:
 
 ## Autor
 
-Desarrollado como proyecto personal para practicar programación con Python y Pygame.  
-Sugerencias, mejoras o forks son bienvenidos.
-
+Desarrollado como proyecto para programacion de computadores
+Xavier Andres Hernandez Pinzon
+Santiago Renteria Pino
+Jaider Alberto Martinez Espinal
